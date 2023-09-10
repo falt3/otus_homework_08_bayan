@@ -14,10 +14,11 @@
 
 #include <iostream>
 #include <vector>
-#include <string>
 #include <boost/program_options.hpp>
 #include <filesystem>
+#include <string>
 #include <fstream>
+#include <algorithm>
 // #include <boost/filesystem/operations.hpp>
 
 namespace opt = boost::program_options;
@@ -45,6 +46,22 @@ enum class THash
     crc32,          ///< CRC32
     md5,            ///< MD5
 };
+
+//----------------------------------------------------------------
+
+std::string printV(std::vector<uint8_t> &val) 
+{
+    std::ostringstream ss;
+    ss << std::hex << "0x";
+    for (auto el : val) {
+        ss.width(2);
+        ss.fill('0');
+        ss << (uint32_t)el;
+    }
+    ss << std::dec;
+    return ss.str();
+}
+
 
 //----------------------------------------------------------------
 /**
@@ -83,48 +100,101 @@ void scan(const std::string& dir_in, const std::vector<std::string>& dir_ignore,
 
 //----------------------------------------------------------------
 
-void hash_sum(const std::vector<uint8_t>& data, std::vector<uint8_t>& h) 
+void hash_sum(const std::string& data, std::vector<uint8_t>& h) 
 {
     uint sum = 0;
-    for (auto el : data)
-        sum += el;
-    h[0] = (sum >> 24) && 0xff;
-    h[1] = (sum >> 16) && 0xff;
-    h[2] = (sum >> 8) && 0xff;
-    h[3] = (sum >> 0) && 0xff;
+    for (auto el : data) {
+        sum += (uint8_t)el;
+        // std::cout << "sum: " << sum << std::endl;
+    }
+    h[0] = (sum >> 24) & 0xff;
+    h[1] = (sum >> 16) & 0xff;
+    h[2] = (sum >> 8) & 0xff;
+    h[3] = (sum >> 0) & 0xff;
+    // std::cout << "    hash0: " << std::hex << (uint32_t)h[0] << " " << (uint32_t)h[1] << " " << (uint32_t)h[2] << " " << (uint32_t)h[3] << std::dec << std::endl;
 }
 
 /**
- * @brief 
+ * @brief   Функция сравнения двух файлов поблочно
  * 
- * @param [in] begin 
- * @param [in] end 
- * @param [in] block 
+ * @param [in] begin        Итератор начала диапозона списка файлов для сравнения
+ * @param [in] end          Итератор конца диапозона списка файлов для сравнения
+ * @param [in] blockSize    Размер блока чтения из файла
+ * @param [in] bytesRead    Количество прочитанных байт в файле 
+ * @param [in] group        Текущий номер группы для файлов с одинаковым содержимым
  */
-void compare(std::vector<TFileInf>::iterator begin, std::vector<TFileInf>::iterator end, int block, THash )
+void compare(std::vector<TFileInf>::iterator begin, std::vector<TFileInf>::iterator end, std::size_t blockSize, std::size_t bytesRead, int& group, THash hashFunc)
 {
-    // -- вывод на экран
-    std::cout << "Compare: " << sizeof(begin) << "\n";
-    for (auto it = begin; it != end; ++it) {
-        std::cout << "    " << (*it).size << "  " << (*it).fn << std::endl;
-    }   
-
+    assert(begin != end && "compare: 001");
+    assert(blockSize > 0);
 
     // -- чтение из файла и расчет hash
-    std::vector<char> mr(block);
+    std::string ss;             // буфер для чтения
+    ss.resize(blockSize, 0);
+
+    bool fl_readLast = (bytesRead + blockSize) > (*begin).size ? true : false;  // последнее чтение из файла
+    int blockRead =  fl_readLast ? ((*begin).size - bytesRead) : blockSize;     // кол-во байт которое нужно прочитать
+
+    // -- вывод на экран
+    std::cout << "Compare: " << end - begin << " " << blockSize << " " << fl_readLast << " " << blockRead << " " << bytesRead << "\n";
+
     for (auto it = begin; it != end; ++it) {
-        // std::fill_n(mr.begin(), block);
-        std::ifstream ifs((*it).fn, std::ios_base::in);
-        ifs.read(mr.begin, block);
+        std::cout << "    " << (*it).size << "  " << (*it).fn << " " << (*it).hash.size() << std::endl;
+        std::ifstream fs((*it).fn);
+        if (fs.is_open()) {
+            fs.seekg(bytesRead);
+            fs.read(ss.data(), blockRead);
+            fs.close();
+        }
+        else 
+            std::cout << "    no opened\n";
+            
+        hash_sum(ss, (*it).hash);       // расчет hash
     }
 
-    // std::fstream fs("./test_files/ip_filter.tsv", std::fstream::in);
-    // BOOST_TEST(fs.is_open());
-    // if (fs.is_open()) {
-    //     inputData(ipMas, fs);
-    //     fs.close();
-    // }
+    bytesRead += blockRead;
 
+
+    // -- сортировка по hash
+    std::sort(begin, end, [](TFileInf& a, TFileInf& b) {
+        for (std::size_t i = 0; i < a.hash.size(); ++i) {
+            if (b.hash[i] > a.hash[i]) return true;
+        }
+        return false;
+    });
+
+
+    // -- нахождение одинаковых файлов
+    int count = 1;                
+    std::vector<uint8_t> &val = (*begin).hash;
+    std::cout << "  hash: " << printV(val) << std::endl;
+
+    for (auto it = begin + 1; it < end; ++it) {
+        int count_tmp = 0;
+        if (equal(val.cbegin(), val.cend(), (*it).hash.cbegin())) {
+            count++;
+            if (it == end - 1) {    // Проверяем, что это последний элемент 
+                it++;               // переставляем на end, чтобы два случая одинаково обрабатывать
+                count_tmp = count;
+            }
+        }
+        else {
+            if (count > 1) 
+                count_tmp = count;
+            val = (*it).hash;
+            count = 1;
+        }
+
+        if (count_tmp > 0) {
+            if (fl_readLast) {  
+                group++;
+                for (auto it2 = it - count_tmp; it2 != it; ++it2)
+                    (*it2).group = group;
+            }            
+            else 
+                compare(it - count_tmp, it, blockSize, bytesRead, group, hashFunc);
+        }
+    }
 }
 
 //----------------------------------------------------------------
@@ -155,8 +225,7 @@ int main(int argc, const char* argv[])
     std::vector<std::string>  dir_in;
     if (vm.count("dir")) {
         dir_in = vm["dir"].as<std::vector<std::string>>();
-        // std::for_each(dir_in.cbegin(), dir_in.cend(), [](auto el){std::cout << " " << el;});        
-    }    // if (vm.count("level"))
+    } 
 
     std::vector<std::string>  dir_ignore;
     if (vm.count("ignore"))
@@ -170,9 +239,9 @@ int main(int argc, const char* argv[])
     if (vm.count("size"))
         minSize = vm["size"].as<int>();
 
-    int block = 100;
+    int blockSize = 100;
     if (vm.count("block"))
-        block = vm["block"].as<int>();
+        blockSize = vm["block"].as<int>();
 
     THash hash = THash::none;
     if (vm.count("hash")) {
@@ -180,9 +249,6 @@ int main(int argc, const char* argv[])
         if (s == "crc32") hash = THash::crc32;
         else if (s == "md5") hash = THash::md5;
     }
-
-
-    std::cout << "Init: " << level << " " << minSize << std::endl;
 
 
     // -- формирование списка файлов
@@ -198,20 +264,22 @@ int main(int argc, const char* argv[])
 
 
     // -- вывод начального списка файлов 
-    std::cout << "Массив файлов:\n";
-    for (auto el : mas) {
-        std::cout << el.size << "\t" << el.fn << std::endl;
-    }
+    // std::cout << "Массив файлов:\n";
+    // for (auto el : mas) {
+    //     std::cout << el.size << "\t" << el.fn << std::endl;
+    // }
 
 
-    // -- нахождение одинаковых файлов/ -- вывод списков с одинаковыми файлам
+    // -- нахождение одинаковых файлов
+    int group = 0;
     std::size_t val = -1;
     int count = 0;
+
     for (auto it = mas.begin(); it != mas.end(); ++it) {
         if (val != (*it).size) {
             if (count > 1) {
                 (*(it-1)).hash.resize(4);
-                compare(it - count, it, 0, hash);
+                compare(it - count, it, blockSize, 0, group, hash);
             }
             val = (*it).size;
             count = 1;
@@ -221,11 +289,29 @@ int main(int argc, const char* argv[])
             (*(it-1)).hash.resize(4);
         }
     }
-    if (count != 0) 
-        compare(mas.end() - count, mas.end(), block, hash);
+    if (count != 0) {
+        (*(mas.end()-1)).hash.resize(4);
+        compare(mas.end() - count, mas.end(), blockSize, 0, group, hash);
+    }
 
-    // -- вывод списков с одинаковыми файлами
+    
+    // std::cout << "Массив файлов:\n";
+    // for (auto el : mas) {
+    //     std::cout << el.size << "  " << el.group << "  "<< el.fn << std::endl;
+    // }
 
+
+    // -- вывод списков с одинаковым содержимым файлов
+    int group_ = 0;
+    for (auto el : mas) {
+        if (el.group != 0) {
+            if (el.group != group_) 
+                std::cout << std::endl;
+            std::cout << el.fn << std::endl;
+            group_ = el.group;
+        }
+    }
+        
     
     return 0;
 }
