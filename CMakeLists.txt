@@ -9,6 +9,8 @@ project(${myProject} VERSION ${PROJECT_VESRION})
 
 find_package(Boost COMPONENTS 
     program_options
+    filesystem
+    regex
     # unit_test_framework 
     REQUIRED)
 
