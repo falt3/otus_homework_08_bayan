@@ -24,6 +24,19 @@
  */
 struct TFileInf 
 {
+    TFileInf(std::size_t size_, const std::string& fn_, int group_) {
+        size = size_;
+        fn = fn_;
+        group = group_;
+    }
+    TFileInf(TFileInf&& el) : size(el.size), fn(std::move(el.fn)), group (el.group), hash(std::move(el.hash)) {}
+    TFileInf& operator=(TFileInf&& el) {
+        size = el.size;
+        fn = std::move(el.fn);
+        group = el.group;
+        hash = std::move(el.hash);
+        return *this;
+    }
     std::size_t size;               ///< размер файла
     std::string fn;                 ///< полное название файла
     int group       = 0;            ///< групирование файлов по содержимому
@@ -63,7 +76,7 @@ void scan(const std::string& dir_in, const std::vector<std::string>& dirs_ignore
                     bool matched = boost::regex_match(entry.path().filename().string(), re);
                     // std::cout << "\tpath part: " << " = " << entry << " " << matched << std::endl;
                     if (matched)
-                        files.push_back({fs::file_size(entry.path()), fs::canonical(entry).string(), 0, {}});
+                        files.push_back({fs::file_size(entry.path()), fs::canonical(entry).string(), 0});
                 }
             }
         }
@@ -133,7 +146,7 @@ void compare(std::vector<TFileInf>::iterator begin, std::vector<TFileInf>::itera
         if (equal(val.cbegin(), val.cend(), (*it).hash.cbegin())) {
             count++;
             if (it == end - 1) {    // Проверяем, что это последний элемент 
-                it++;               // переставляем на end, чтобы два случая одинаково обработать
+                it++;               // переставляем на end, чтобы два случая группировки одинаково обработать
                 flagCount = count;
             }
         }
@@ -205,7 +218,7 @@ int main(int argc, const char* argv[])
 
     // -- вывод списков с одинаковым содержимым файлов
     int group_ = 0;
-    for (auto el : files) {
+    for (auto& el : files) {
         if (el.group != 0) {
             if (el.group != group_ && group_ != 0) // вывод пустой строки между группами файлов
                 std::cout << std::endl;
